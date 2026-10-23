@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Dataset and generated data
+data/raw/
+data/processed/
+data/warehouse/
+*.duckdb
+*.duckdb.wal
+
+# dbt generated files
+music_analytics/target/
+music_analytics/logs/
+music_analytics/dbt_packages/
+
+# Local reports and logs
+logs/
+*.log

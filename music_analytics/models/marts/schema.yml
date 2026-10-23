@@ -1,0 +1,27 @@
+
+version: 2
+
+models:
+  - name: dim_artists
+    description: "One row per artist represented in the dataset."
+    columns:
+      - name: artist_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: fct_song_audio
+    description: "One row per track with audio features and song metadata."
+    columns:
+      - name: track_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: song_yearly_summary
+    description: "Aggregated song and audio statistics for each known release year."
+    columns:
+      - name: release_year
+        data_tests:
+          - not_null
+          - unique
