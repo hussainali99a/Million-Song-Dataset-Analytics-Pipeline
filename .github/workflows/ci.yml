@@ -47,5 +47,18 @@ jobs:
           python -m py_compile .\run_pipeline.py
           python -m py_compile .\src\processing\extract_to_parquet.py
 
+      - name: Lint with Ruff
+        run: python -m ruff check src tests run_pipeline.py
+
       - name: Run automated tests
         run: python -m pytest -q
+
+      - name: Generate coverage report
+        run: python -m pytest --cov=src --cov-report=term-missing --cov-report=xml:coverage.xml -q
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: error
