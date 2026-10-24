@@ -1,168 +1,165 @@
 
-# Million Song Dataset Analytics Pipeline
+# Million Song Dataset — Data Engineering Pipeline
 
-An end-to-end Data Engineering project that transforms raw Million Song Dataset HDF5 files into an analytics-ready Parquet dataset, loads analytical models into DuckDB using dbt, and validates data quality through automated tests.
+A reproducible data engineering project that transforms raw song metadata stored in HDF5 files into analytics-ready Parquet datasets and a DuckDB warehouse, with dbt transformations, automated data pipeline tests, and continuous integration.
 
-## Overview
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+![DuckDB](https://img.shields.io/badge/Warehouse-DuckDB-yellow)
+![dbt](https://img.shields.io/badge/Transformations-dbt-orange)
+![Testing](https://img.shields.io/badge/Tests-pytest-green)
+![CI](<https://img.shields.io/badge/CI-GitHub%20Actions-success>)
 
-This project demonstrates how to build a reliable, repeatable data pipeline using Python, Parquet, DuckDB, and dbt.
+## Project Overview
 
-The pipeline extracts audio and artist metadata from the Million Song Dataset subset, tracks source-file changes through an ingestion manifest, and prepares analytical tables for downstream querying and reporting.
+Working with raw datasets requires more than extracting data. A reliable pipeline must handle changing source files, preserve data integrity, transform records into analytical models, and validate its behavior through automated tests.
 
-The current local dataset contains **10,000 songs**.
+This project implements a local-first data engineering workflow for the Million Song Dataset subset. It uses Python for extraction and incremental processing, Parquet for columnar storage, DuckDB as the analytical warehouse, dbt for data modeling, and GitHub Actions for continuous integration.
 
-### Key capabilities
+### Key Features
 
-- **Incremental ingestion:** Detect new, modified, and deleted source files.
-- **Columnar storage:** Store extracted song metadata in Parquet.
-- **Analytical warehouse:** Use DuckDB for local analytical queries.
-- **Data transformation:** Build staging, dimension, fact, and summary models with dbt.
-- **Data quality:** Validate record counts, unique identifiers, and pipeline outputs.
-- **Automated testing:** Test extraction and pipeline behavior using pytest.
-- **Observability:** Generate execution logs and structured pipeline reports.
-- **Repeatable execution:** Run the pipeline locally without paid cloud infrastructure.
+- **HDF5 ingestion:** Extracts song and artist metadata from the raw dataset.
+- **Incremental processing:** Tracks source-file signatures in an ingestion manifest to identify new or modified files.
+- **Change handling:** Supports reprocessing changed files and accounting for removed source files.
+- **Parquet storage:** Stores processed song records in a columnar format.
+- **Failure handling:** Records extraction errors and supports retrying failed files.
+- **Analytical warehouse:** Uses DuckDB to query structured song data.
+- **dbt transformations:** Builds staging, dimension, fact, and summary models.
+- **Automated testing:** Uses pytest to validate extraction and warehouse behavior.
+- **Code quality:** Uses Ruff for Python linting.
+- **Continuous integration:** Runs automated checks through GitHub Actions and uploads a coverage report.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A[Million Song Dataset HDF5 Files]
-    B[Python Extraction]
-    C[Incremental Ingestion Manifest]
-    D[Processed Parquet Dataset]
-    E[Data Quality Validation]
-    F[DuckDB Warehouse]
-    G[dbt Models]
-    H[Analytics Tables]
-    I[Pipeline Reports and Logs]
-
-    A --> B
-    C --> B
-    B --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> H
-    B --> I
-    E --> I
-    G --> I
+    A["Raw Million Song Dataset<br/>HDF5 files"] --> B["Python ingestion"]
+    B --> C["Incremental processing<br/>Manifest and file signatures"]
+    C --> D["Processed Parquet"]
+    C --> E["Extraction error report"]
+    D --> F["DuckDB warehouse"]
+    F --> G["dbt staging model"]
+    G --> H["Artist dimension"]
+    G --> I["Song audio fact"]
+    H --> J["Analytics models"]
+    I --> J
+    J --> K["Yearly song summary"]
+    L["pytest + Ruff"] --> M["GitHub Actions CI"]
+    N["Coverage report"] --> M
 ```
 
-## Technology stack
+## Technology Stack
 
-| Technology        | Purpose                                               |
-| ----------------- | ----------------------------------------------------- |
-| Python            | Extraction, orchestration, validation, and automation |
-| HDF5 / h5py       | Reading source song metadata                          |
-| Pandas            | Data manipulation and transformation                  |
-| PyArrow / Parquet | Efficient columnar storage                            |
-| DuckDB            | Local analytical warehouse                            |
-| dbt               | SQL-based modeling and data testing                   |
-| pytest            | Automated testing                                     |
-| Git / GitHub      | Version control and project presentation              |
+| Component                | Technology     | Purpose                                |
+| ------------------------ | -------------- | -------------------------------------- |
+| Programming language     | Python         | Ingestion, processing, orchestration   |
+| Source format            | HDF5           | Raw song and artist metadata           |
+| Processed storage        | Parquet        | Columnar data storage                  |
+| Analytical database      | DuckDB         | Local analytical warehouse             |
+| Transformation framework | dbt            | SQL modeling and data tests            |
+| Testing                  | pytest         | Automated regression and unit tests    |
+| Code quality             | Ruff           | Python linting                         |
+| CI/CD checks             | GitHub Actions | Automated checks on repository changes |
 
-## Dataset and extracted fields
+## Data Pipeline
 
-The project uses the local Million Song Dataset subset, consisting of 10,000 HDF5 files.
+### 1. Extract
 
-The extracted schema includes metadata such as:
+The ingestion process reads the source HDF5 files and extracts relevant attributes, including:
 
 - Track and song identifiers
-- Song title
-- Artist identifier and name
-- Artist location and coordinates
+- Song title and artist information
+- Artist location and coordinates, when available
 - Release and year
-- Genre
 - Duration, tempo, and loudness
-- Danceability and energy
-- Musical key, mode, and time signature
-- Song hotness, artist hotness, and artist familiarity
-- Source-file path and ingestion timestamp
+- Danceability, energy, key, mode, and time signature
+- Song and artist popularity-related attributes
 
-The dataset is intended for analytical exploration. The subset does not represent the entire Million Song Dataset, and some fields may contain missing or unavailable values.
+The extractor normalizes relevant data types and writes structured records to Parquet.
 
-## Data engineering workflow
+### 2. Process incrementally
 
-### 1. Extraction
+An ingestion manifest records source-file signatures so that the pipeline can determine which files need processing.
 
-Python reads the source HDF5 files and extracts the required metadata into a structured tabular dataset.
+The incremental workflow is designed to:
 
-### 2. Incremental ingestion
+- Process newly discovered files
+- Reprocess files whose tracked signatures change
+- Avoid reprocessing unchanged files unnecessarily
+- Account for source files that have been removed
+- Preserve existing records when appropriate if a replacement file fails
+- Record extraction failures for diagnosis and retry
 
-The ingestion manifest stores source-file signatures, including file size and modification time. The extractor uses these signatures to identify files that need processing.
+The manifest is maintained at:
 
-The intended incremental behavior is to:
+`data/processed/ingestion_manifest.json`
 
-- Process new files.
-- Reprocess changed files.
-- Remove records associated with deleted source files.
-- Preserve previous valid records when a changed file cannot be processed.
-- Avoid unnecessary work for unchanged files.
+### 3. Store processed data
 
-### 3. Parquet storage
+The main processed dataset is:
 
-Extracted data is written to `data/processed/songs.parquet`.
+`data/processed/songs.parquet`
 
-Parquet provides columnar storage that is suitable for analytical workloads. Data-quality checks should verify the expected schema, record counts, and uniqueness constraints.
+The pipeline uses Parquet to retain a structured representation of the extracted records for downstream analytical processing.
 
-### 4. Warehouse and transformations
+### 4. Build the analytical warehouse
 
-DuckDB provides a local analytical warehouse. The dbt project builds the following models:
+DuckDB provides a local analytical database without requiring a separate database server.
 
-| Model                   | Purpose                              |
-| ----------------------- | ------------------------------------ |
-| `stg_songs`           | Staging view for extracted song data |
-| `dim_artists`         | Artist dimension                     |
-| `fct_song_audio`      | Song-level audio features            |
-| `song_yearly_summary` | Aggregated summary by year           |
+The warehouse file is:
 
-The exact business rules and grain of each model are defined in the SQL model files.
+`data/warehouse/music_analytics.duckdb`
 
-### 5. Testing and reporting
+The dbt project builds analytical models on top of the available song data.
 
-The pipeline orchestrator executes extraction, dbt transformations, and dbt tests, then collects relevant execution metrics and writes a structured report.
+### 5. Transform with dbt
 
-The pipeline should fail clearly when a required stage or data-quality check fails.
+The project includes the following models:
 
-## Repository structure
+| Model                   | Materialization | Purpose                        |
+| ----------------------- | --------------- | ------------------------------ |
+| `stg_songs`           | View            | Staging layer for song records |
+| `dim_artists`         | Table           | Artist dimension               |
+| `fct_song_audio`      | Table           | Song-level audio attributes    |
+| `song_yearly_summary` | Table           | Summary of songs by year       |
 
-```text
-million-song-data-pipeline/
-├── data/
-│   ├── raw/
-│   │   └── MillionSongSubset/
-│   ├── processed/
-│   │   ├── songs.parquet
-│   │   ├── ingestion_manifest.json
-│   │   └── extraction_errors.csv
-│   └── warehouse/
-│       └── music_analytics.duckdb
-├── music_analytics/
-│   ├── models/
-│   │   ├── staging/
-│   │   └── ...
-│   └── dbt_project.yml
-├── src/
-│   └── processing/
-│       └── extract_to_parquet.py
-├── tests/
-├── reports/
-├── run_pipeline.py
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
+The staging layer provides a consistent foundation for downstream analytical models, while the dimension, fact, and summary models organize the data for analytical queries.
 
-This is a logical overview. Confirm the actual folders and filenames in the repository before treating it as an exact file listing.
+### 6. Test and validate
 
-## Setup
+The automated tests validate important pipeline behavior without requiring the full local dataset for every test. Synthetic fixtures and temporary resources help keep tests reproducible.
+
+The project also uses Ruff to detect Python code-quality issues.
+
+## Current Validation Results
+
+The following results were verified during local development:
+
+| Check                      |               Result |
+| -------------------------- | -------------------: |
+| Extracted song records     |               10,000 |
+| Unique track IDs           |               10,000 |
+| Unique source files        |               10,000 |
+| Ingestion manifest entries |               10,000 |
+| Artist dimension rows      |                3,888 |
+| Song audio fact rows       |               10,000 |
+| Yearly summary rows        |                   68 |
+| Automated tests            | 25 passed, 1 skipped |
+| Overall source coverage    |                  89% |
+| Extractor coverage         |                  88% |
+| Warehouse builder coverage |                  96% |
+| Ruff linting               |               Passed |
+| GitHub Actions CI          |           Successful |
+
+These figures describe the dataset and local test run used during development. Results can differ if the source data or implementation changes.
+
+## Getting Started
 
 ### Prerequisites
 
-- Python compatible with the project's installed dependencies
+- Python 3.13
 - Git
-- The Million Song Dataset subset, available locally
-- A configured dbt profile for DuckDB
+- Access to the Million Song Dataset subset used by this project
+- The raw HDF5 files arranged in the directory structure expected by the extractor
 
 ### 1. Clone the repository
 
@@ -171,153 +168,146 @@ git clone <YOUR_GITHUB_REPOSITORY_URL>
 cd million-song-data-pipeline
 ```
 
+Replace the placeholder with your actual repository URL.
+
 ### 2. Create a virtual environment
 
-On Windows PowerShell:
-
 ```powershell
-python -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-If PowerShell blocks activation, you can run the environment's Python executable directly without activating it.
+If PowerShell prevents environment activation, you can use the virtual environment's Python executable directly.
 
 ### 3. Install dependencies
 
 ```powershell
-.\.venv\Scripts\python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Confirm that the raw dataset is available at the expected location and that the DuckDB/dbt configuration matches your local environment.
+### 4. Prepare the dataset
 
-## Running the pipeline
+Place the raw HDF5 files in the location expected by the ingestion configuration. In the development setup, the source directory is:
 
-Run the extraction step independently:
+`data/raw/MillionSongSubset`
+
+Do not commit the full raw dataset, generated Parquet files, or local warehouse database to Git unless there is a specific reason to distribute them.
+
+### 5. Configure dbt
+
+The dbt profile is configured locally in:
+
+`%USERPROFILE%\.dbt\profiles.yml`
+
+Update the profile to match the project's `dbt_project.yml`, the installed DuckDB adapter, and your local warehouse path. Do not commit machine-specific profile settings or credentials.
+
+### 6. Run the pipeline
+
+From the project root, run:
 
 ```powershell
-.\.venv\Scripts\python -m src.processing.extract_to_parquet
+python run_pipeline.py
 ```
 
-Run automated tests:
+The orchestration script coordinates the configured pipeline stages, including extraction, dbt execution, testing, and reporting.
+
+Consult the current script and project configuration if you need to run an individual stage independently.
+
+## Development and Quality Checks
+
+Run the automated tests:
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q
+python -m pytest -q
 ```
 
-Run the complete pipeline:
+Run Ruff:
 
 ```powershell
-.\.venv\Scripts\python run_pipeline.py
+python -m ruff check src tests run_pipeline.py
 ```
 
-The complete pipeline should execute the configured extraction, validation, transformation, and testing stages.
+Generate a coverage report:
 
-## Example validation results
-
-Latest results reported during local development:
-
-| Check                  |                 Result |
-| ---------------------- | ---------------------: |
-| Source dataset size    |           10,000 files |
-| Extracted Parquet rows |                 10,000 |
-| Unique track IDs       |                 10,000 |
-| Unique source files    |                 10,000 |
-| Automated tests        |              17 passed |
-| Pipeline execution     | Completed successfully |
-
-These results describe the reported development run. Re-run the pipeline and tests to reproduce them in your environment.
-
-## Data quality and reliability
-
-The project aims to enforce the following safeguards:
-
-- Parquet files must be readable.
-- Required columns must exist.
-- Track identifiers and source-file keys must satisfy uniqueness requirements.
-- Extraction errors must be reported.
-- Incremental updates must not silently duplicate records.
-- Failed processing must not destroy the last valid output.
-- dbt model and test failures must be visible in the pipeline result.
-
-Incremental ingestion should be tested with new, changed, deleted, and unreadable source files before being considered fully reliable.
-
-## Example analytical queries
-
-Once the corresponding dbt models have been built, you can query them in DuckDB.
-
-Example: inspect the song-level audio table.
-
-```sql
-SELECT
-    track_id,
-    title,
-    artist_name,
-    duration_seconds,
-    tempo,
-    loudness
-FROM analytics.fct_song_audio
-LIMIT 10;
+```powershell
+python -m pytest --cov=src --cov-report=term-missing --cov-report=xml:coverage.xml -q
 ```
 
-Example: inspect yearly aggregates.
+The terminal report shows which statements are covered, and the XML report can be consumed by compatible coverage-reporting tools.
 
-```sql
-SELECT *
-FROM analytics.song_yearly_summary
-ORDER BY year;
+## Continuous Integration
+
+The GitHub Actions workflow is located at:
+
+`.github/workflows/ci.yml`
+
+The workflow checks out the repository, sets up Python, installs dependencies, checks Python syntax, runs Ruff and pytest, generates a coverage report, and uploads the report as an artifact.
+
+The workflow was verified to complete successfully in GitHub Actions during development.
+
+To inspect the latest run, open the repository on GitHub and select **Actions**.
+
+## Project Structure
+
+```text
+million-song-data-pipeline/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── data/
+│   ├── raw/
+│   │   └── MillionSongSubset/
+│   ├── processed/
+│   │   ├── songs.parquet
+│   │   └── ingestion_manifest.json
+│   └── warehouse/
+│       └── music_analytics.duckdb
+├── music_analytics/
+│   ├── models/
+│   └── dbt_project.yml
+├── src/
+│   ├── ingestion/
+│   ├── processing/
+│   │   └── extract_to_parquet.py
+│   ├── storage/
+│   ├── utils/
+│   └── warehouse/
+│       └── build_warehouse.py
+├── tests/
+├── run_pipeline.py
+├── requirements.txt
+└── README.md
 ```
 
-Example: find artists with the most tracks in the extracted subset.
+This is a high-level representation of the project. Verify the exact directory names against the current repository before publishing.
 
-```sql
-SELECT
-    artist_name,
-    COUNT(*) AS track_count
-FROM analytics.fct_song_audio
-GROUP BY artist_name
-ORDER BY track_count DESC
-LIMIT 20;
-```
+## Engineering Practices Demonstrated
 
-Check the actual model column names and configured schema if your local dbt models differ from these examples.
+- Incremental ingestion and source-file change detection
+- Structured storage using Parquet
+- Analytical modeling using DuckDB and dbt
+- Separation of ingestion, processing, and warehouse responsibilities
+- Error reporting and recovery-oriented processing
+- Automated regression testing
+- Python linting and continuous integration
+- Test coverage measurement and reproducible validation
 
-## Engineering decisions
+## Future Improvements
 
-**Why Parquet?**
-It stores structured data efficiently in a columnar format and works well with analytical engines.
+Potential extensions include:
 
-**Why DuckDB?**
-It provides fast analytical SQL locally without requiring a separately managed database server.
+- Add dedicated tests for pipeline orchestration and remaining extraction edge cases.
+- Introduce explicit data-quality checks for required fields, uniqueness, and valid ranges.
+- Add a documented set of sample analytical SQL queries.
+- Add query-performance benchmarks and execution plans.
+- Publish a reproducible architecture diagram and sample query results.
+- Explore cloud storage and orchestration when a deployment environment becomes available.
 
-**Why dbt?**
-It organizes SQL transformations into reusable models and provides a framework for testing data assumptions.
+## License and Dataset Attribution
 
-**Why incremental ingestion?**
-It avoids repeatedly processing unchanged files and supports more efficient reruns as source data changes.
+Before redistributing the source dataset or publishing derived data, check the applicable Million Song Dataset terms and the licensing requirements of any additional sources. Add the project's software license and the dataset attribution details once they have been confirmed.
 
-**Why automated tests?**
-They help detect regressions in extraction, incremental behavior, data integrity, and orchestration.
+---
 
-## Limitations
-
-- The project currently uses a 10,000-file dataset subset rather than the complete Million Song Dataset.
-- It is a local batch-processing pipeline, not a live streaming system.
-- It does not claim cloud-scale performance or distributed processing.
-- Incremental ingestion reliability depends on the correctness of source signatures, manifest reconciliation, and failure handling.
-- The reported metrics are local development results, not independently benchmarked production SLAs.
-
-## Future improvements
-
-- Add a CI workflow that runs unit tests and quality checks on each pull request.
-- Add integration tests for changed and deleted source files.
-- Add data lineage and schema-change detection.
-- Add reproducible data-quality summaries and historical run metrics.
-- Add containerized execution for consistent environments.
-- Add optional cloud object storage and orchestration when a cloud deployment is justified.
-- Add analytical dashboards based on the curated warehouse tables.
-
-## Author
-
-Built as a hands-on Data Engineering portfolio project focused on Python, incremental data processing, columnar storage, SQL transformations, analytics, and automated validation.
-
-If you find the project useful, feel free to explore the implementation, raise issues, or suggest improvements.
+**Built as a hands-on data engineering portfolio project focused on reliable ingestion, incremental processing, analytical modeling, testing, and automation.**
