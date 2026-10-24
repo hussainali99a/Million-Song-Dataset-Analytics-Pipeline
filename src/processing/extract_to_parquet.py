@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import h5py
@@ -66,32 +67,47 @@ EXPECTED_COLUMNS = [
 ]
 
 
-def normalize_source_path(path_value: Any) -> str:
-    """Normalize source paths so manifest keys and Parquet rows agree."""
+def normalize_source_path(
+    path_value: Any,
+    project_root: Path | str | None = None,
+) -> str:
+    """Normalize paths under the project root without rewriting external paths."""
     if path_value is None or (isinstance(path_value, float) and pd.isna(path_value)):
         return ""
 
-    value = str(path_value).replace("\\", "/")
-    value = value.replace("file://", "")
-    value = os.path.normpath(value).replace("\\", "/")
+    value = str(path_value).removeprefix("file://")
+    root_value = str(project_root if project_root is not None else PROJECT_ROOT)
+    windows_path = PureWindowsPath(value)
+    windows_root = PureWindowsPath(root_value)
 
-    try:
-        project_root = PROJECT_ROOT.resolve().as_posix()
-        if Path(value).is_absolute():
-            absolute = Path(value).resolve()
+    if windows_path.is_absolute():
+        path_parts = windows_path.parts
+        root_parts = windows_root.parts
+        if (
+            windows_root.is_absolute()
+            and len(path_parts) >= len(root_parts)
+            and all(
+                path_part.casefold() == root_part.casefold()
+                for path_part, root_part in zip(path_parts, root_parts)
+            )
+        ):
+            return PurePosixPath(*path_parts[len(root_parts):]).as_posix()
+        return windows_path.as_posix()
+
+    posix_path = PurePosixPath(value.replace("\\", "/"))
+    posix_root = PurePosixPath(root_value.replace("\\", "/"))
+    if posix_path.is_absolute():
+        normalized_path = PurePosixPath(posixpath.normpath(posix_path.as_posix()))
+        if posix_root.is_absolute():
+            normalized_root = PurePosixPath(posixpath.normpath(posix_root.as_posix()))
             try:
-                relative = absolute.relative_to(PROJECT_ROOT.resolve())
-                return relative.as_posix()
+                return normalized_path.relative_to(normalized_root).as_posix()
             except ValueError:
                 pass
-        if value.startswith(project_root + "/"):
-            return Path(value).relative_to(project_root).as_posix()
-    except (OSError, RuntimeError):
-        pass
+        return normalized_path.as_posix()
 
-    if value.startswith("./"):
-        value = value[2:]
-    return value.lstrip("/")
+    normalized = PurePosixPath(posixpath.normpath(posix_path.as_posix())).as_posix()
+    return "" if normalized == "." else normalized
 
 
 def decode_value(value: Any) -> Any:
@@ -310,11 +326,17 @@ def extract_dataset(
     input_dir: Path = DEFAULT_INPUT,
     output_file: Path = DEFAULT_OUTPUT,
     manifest_file: Path = MANIFEST_FILE,
+    failure_file: Path | None = None,
 ) -> pd.DataFrame:
     """Incrementally extract changed HDF5 files into a Parquet dataset."""
     input_dir = Path(input_dir)
     output_file = Path(output_file)
     manifest_file = Path(manifest_file)
+    failure_file = (
+        Path(failure_file)
+        if failure_file is not None
+        else output_file.parent / FAILURE_FILE.name
+    )
 
     if not input_dir.is_dir():
         raise FileNotFoundError(f"Dataset directory not found: {input_dir}")
@@ -432,9 +454,10 @@ def extract_dataset(
     )
 
     if failures:
-        pd.DataFrame(failures).to_csv(FAILURE_FILE, index=False)
-    elif FAILURE_FILE.exists():
-        FAILURE_FILE.unlink()
+        failure_file.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(failures).to_csv(failure_file, index=False)
+    elif failure_file.exists():
+        failure_file.unlink()
 
     print("\nIncremental extraction complete")
     print(f"Discovered:       {len(files):,}")

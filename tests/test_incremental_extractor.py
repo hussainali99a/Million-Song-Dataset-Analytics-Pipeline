@@ -143,23 +143,39 @@ def test_failed_file_keeps_old_record_and_retries_next_run(tmp_path: Path) -> No
     input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
     output_file = tmp_path / "data" / "processed" / "songs.parquet"
     manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+    failure_file = tmp_path / "failure-reports" / "nested" / "extraction_errors.csv"
 
     make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
     make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
-    extract_dataset(input_dir, output_file, manifest_file)
+    extract_dataset(input_dir, output_file, manifest_file, failure_file)
+    original_parquet = output_file.read_bytes()
+    original_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))["files"]
+    original_record = pd.read_parquet(output_file).set_index("track_id").loc["TR00002"]
 
     broken = input_dir / "TR00002.h5"
     broken.write_text("not-a-valid-hdf5-file", encoding="utf-8")
-    df = extract_dataset(input_dir, output_file, manifest_file)
+    df = extract_dataset(input_dir, output_file, manifest_file, failure_file)
 
     assert len(df) == 2
     assert df["track_id"].is_unique
     assert "TR00002" in df["track_id"].tolist()
+    retained_record = df.set_index("track_id").loc["TR00002"]
+    assert retained_record["title"] == original_record["title"]
+    assert output_file.read_bytes() == original_parquet
+
+    failed_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))["files"]
+    source_path = retained_record["source_file"]
+    assert failed_manifest[source_path] == original_manifest[source_path]
+    assert failure_file.is_file()
+    assert pd.read_csv(failure_file)["source_file"].tolist() == [source_path]
 
     make_hdf5_file(broken, track_id="TR00002", title="Recovered title")
-    df = extract_dataset(input_dir, output_file, manifest_file)
+    df = extract_dataset(input_dir, output_file, manifest_file, failure_file)
     assert len(df) == 2
     assert df[df["track_id"] == "TR00002"].iloc[0]["title"] == "Recovered title"
+    assert not failure_file.exists()
+    recovered_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))["files"]
+    assert recovered_manifest[source_path] != original_manifest[source_path]
 
 
 def test_invalid_manifest_is_rejected(tmp_path: Path) -> None:
@@ -245,10 +261,36 @@ def test_atomic_write_failure_preserves_previous_dataset(tmp_path: Path, monkeyp
     assert output_file.read_bytes() == original_bytes
 
 
-def test_path_normalization_removes_windows_prefixes() -> None:
-    assert normalize_source_path("D:/million-song-data-pipeline/data/raw/MillionSongSubset/A/A/A/TR00001.h5") == "data/raw/MillionSongSubset/A/A/A/TR00001.h5"
-    assert normalize_source_path("C:/tmp/input.h5") == "C:/tmp/input.h5"
+def test_normalizes_windows_absolute_path_under_configured_project_root() -> None:
+    assert normalize_source_path(
+        "D:/million-song-data-pipeline/data/raw/MillionSongSubset/A/A/A/TR00001.h5",
+        project_root=r"D:\Million-Song-Data-Pipeline",
+    ) == "data/raw/MillionSongSubset/A/A/A/TR00001.h5"
+
+
+def test_normalizes_backslash_separated_path_under_project_root() -> None:
+    assert normalize_source_path(
+        r"D:\million-song-data-pipeline\data\raw\MillionSongSubset\A\A\A\TR00001.h5",
+        project_root=r"D:\million-song-data-pipeline",
+    ) == "data/raw/MillionSongSubset/A/A/A/TR00001.h5"
+
+
+def test_normalizes_forward_slash_separated_path_under_project_root() -> None:
+    assert normalize_source_path(
+        "D:/million-song-data-pipeline/data/raw/MillionSongSubset/A/A/A/TR00001.h5",
+        project_root="D:/million-song-data-pipeline",
+    ) == "data/raw/MillionSongSubset/A/A/A/TR00001.h5"
+
+
+def test_normalizes_already_relative_path() -> None:
     assert normalize_source_path("./data/raw/x.h5") == "data/raw/x.h5"
+
+
+def test_path_outside_project_root_is_not_made_relative() -> None:
+    assert normalize_source_path(
+        r"C:\tmp\input.h5",
+        project_root=r"D:\million-song-data-pipeline",
+    ) == "C:/tmp/input.h5"
 
 
 @pytest.mark.parametrize("column", ["track_id", "source_file"])
