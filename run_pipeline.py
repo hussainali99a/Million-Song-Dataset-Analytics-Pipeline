@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import queue
 import re
 import subprocess
@@ -11,14 +10,13 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
-
 
 # ============================================================
 # Configuration
@@ -282,7 +280,7 @@ def validate_parquet_dataset(path: Path) -> dict[str, Any]:
         raise ValueError("Parquet contains duplicate source_file values")
 
     return {
-        "row_count": int(len(df)),
+        "row_count": len(df),
         "columns": columns,
         "unique_track_ids": int(df["track_id"].nunique(dropna=True)),
         "unique_source_files": int(df["source_file"].nunique(dropna=True)),
@@ -428,7 +426,7 @@ def get_stages() -> list[tuple[str, list[str]]]:
 # ============================================================
 
 def main() -> int:
-    run_start = datetime.now(timezone.utc)
+    run_start = datetime.now(UTC)
     run_id = run_start.strftime("%Y%m%dT%H%M%SZ")
 
     logger, log_file = configure_logging(run_id)
@@ -469,7 +467,7 @@ def main() -> int:
             )
 
         for name, command in get_stages():
-            stage_start = datetime.now(timezone.utc)
+            stage_start = datetime.now(UTC)
             stage_timer = time.perf_counter()
 
             stage_report: dict[str, Any] = {
@@ -536,7 +534,7 @@ def main() -> int:
 
             finally:
                 stage_report["finished_at_utc"] = (
-                    datetime.now(timezone.utc).isoformat()
+                    datetime.now(UTC).isoformat()
                 )
 
                 if stage_report["duration_seconds"] is None:
@@ -596,7 +594,7 @@ def main() -> int:
 
     finally:
         report["finished_at_utc"] = datetime.now(
-            timezone.utc
+            UTC
         ).isoformat()
 
         report["total_duration_seconds"] = round(

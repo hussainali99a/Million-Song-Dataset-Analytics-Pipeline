@@ -3,7 +3,6 @@ from pathlib import Path
 
 import duckdb
 
-
 ROOT = Path(__file__).resolve().parents[2]
 PARQUET_FILE = ROOT / "data" / "processed" / "songs.parquet"
 WAREHOUSE_DIR = ROOT / "data" / "warehouse"

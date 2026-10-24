@@ -245,7 +245,9 @@ def test_atomic_write_failure_preserves_previous_dataset(tmp_path: Path, monkeyp
     manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
 
     make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
-    initial = extract_dataset(input_dir, output_file, manifest_file)
+    # initial = extract_dataset(input_dir, output_file, manifest_file)
+    # original_bytes = output_file.read_bytes()
+    extract_dataset(input_dir, output_file, manifest_file)
     original_bytes = output_file.read_bytes()
 
     make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")

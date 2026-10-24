@@ -4,14 +4,13 @@ from __future__ import annotations
 import json
 import os
 import posixpath
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import h5py
 import numpy as np
 import pandas as pd
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = PROJECT_ROOT / "data" / "raw" / "MillionSongSubset"
@@ -272,7 +271,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     normalized_files: dict[str, dict[str, int]] = {}
     for raw_key, raw_value in data["files"].items():
         if not isinstance(raw_value, dict):
-            raise ValueError(f"Manifest entry for {raw_key!r} is not a signature object")
+            raise TypeError(f"Manifest entry for {raw_key!r} is not a signature object")
         key = normalize_source_path(raw_key)
         if not key:
             raise ValueError(f"Manifest contains an empty path for {raw_key!r}")
@@ -388,7 +387,7 @@ def extract_dataset(
     if not old_df.empty and paths_to_replace:
         old_df = old_df[~old_df["source_file"].isin(paths_to_replace)].copy()
 
-    ingested_at = datetime.now(timezone.utc).isoformat()
+    ingested_at = datetime.now(UTC).isoformat()
     new_rows: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     successful_signatures: dict[str, dict[str, int]] = {}
@@ -448,7 +447,7 @@ def extract_dataset(
         manifest_file,
         {
             "version": 1,
-            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "updated_at_utc": datetime.now(UTC).isoformat(),
             "files": next_signatures,
         },
     )
