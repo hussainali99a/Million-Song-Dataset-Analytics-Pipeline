@@ -1,0 +1,8 @@
+music_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: 'D:/million-song-data-pipeline/data/warehouse/music_analytics.duckdb'
+      schema: analytics
+      threads: 1

@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import h5py
+import pandas as pd
+import pytest
+
+from src.processing.extract_to_parquet import (
+    EXPECTED_COLUMNS,
+    extract_dataset,
+    normalize_source_path,
+    validate_dataset,
+)
+
+
+def make_hdf5_file(path: Path, *, track_id: str, artist_id: str = "AR1", title: str = "Song") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as h5:
+        analysis = h5.create_dataset(
+            "analysis/songs",
+            shape=(1,),
+            dtype=[
+                ("track_id", "S32"),
+                ("duration", "f8"),
+                ("tempo", "f8"),
+                ("loudness", "f8"),
+                ("danceability", "f8"),
+                ("energy", "f8"),
+                ("key", "i4"),
+                ("mode", "i4"),
+                ("time_signature", "i4"),
+            ],
+        )
+        metadata = h5.create_dataset(
+            "metadata/songs",
+            shape=(1,),
+            dtype=[
+                ("song_id", "S32"),
+                ("title", "S80"),
+                ("artist_id", "S32"),
+                ("artist_name", "S80"),
+                ("artist_location", "S80"),
+                ("artist_latitude", "f8"),
+                ("artist_longitude", "f8"),
+                ("release", "S80"),
+                ("song_hotttnesss", "f8"),
+                ("artist_hotttnesss", "f8"),
+                ("artist_familiarity", "f8"),
+            ],
+        )
+        musicbrainz = h5.create_dataset(
+            "musicbrainz/songs",
+            shape=(1,),
+            dtype=[("year", "i4"), ("genre", "S40")],
+        )
+
+        analysis[0] = (
+            track_id.encode("utf-8"),
+            180.0,
+            101.0,
+            -6.2,
+            0.7,
+            0.8,
+            1,
+            1,
+            4,
+        )
+        metadata[0] = (
+            b"song-1",
+            title.encode("utf-8"),
+            artist_id.encode("utf-8"),
+            b"Artist One",
+            b"London",
+            51.5,
+            -0.1,
+            b"Release",
+            0.7,
+            0.8,
+            0.9,
+        )
+        musicbrainz[0] = (2000, b"Rock")
+
+
+def test_first_ingestion_and_second_no_change_run(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
+
+    df = extract_dataset(input_dir, output_file, manifest_file)
+    assert len(df) == 2
+    assert df["track_id"].is_unique
+    assert df["source_file"].is_unique
+
+    second = extract_dataset(input_dir, output_file, manifest_file)
+    assert len(second) == 2
+    assert second["track_id"].is_unique
+    assert second["source_file"].is_unique
+    assert json.loads(manifest_file.read_text(encoding="utf-8"))["files"]
+
+
+def test_new_file_added_and_existing_file_changed(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
+    extract_dataset(input_dir, output_file, manifest_file)
+
+    make_hdf5_file(input_dir / "TR00003.h5", track_id="TR00003")
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002B", title="Changed title")
+
+    df = extract_dataset(input_dir, output_file, manifest_file)
+    assert len(df) == 3
+    assert df["track_id"].is_unique
+    assert df["source_file"].is_unique
+    row = df[df["track_id"] == "TR00002B"].iloc[0]
+    assert row["title"] == "Changed title"
+
+
+def test_deleted_source_file_is_removed(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
+    extract_dataset(input_dir, output_file, manifest_file)
+
+    (input_dir / "TR00001.h5").unlink()
+    df = extract_dataset(input_dir, output_file, manifest_file)
+
+    assert len(df) == 1
+    assert df["track_id"].tolist() == ["TR00002"]
+
+
+def test_failed_file_keeps_old_record_and_retries_next_run(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
+    extract_dataset(input_dir, output_file, manifest_file)
+
+    broken = input_dir / "TR00002.h5"
+    broken.write_text("not-a-valid-hdf5-file", encoding="utf-8")
+    df = extract_dataset(input_dir, output_file, manifest_file)
+
+    assert len(df) == 2
+    assert df["track_id"].is_unique
+    assert "TR00002" in df["track_id"].tolist()
+
+    make_hdf5_file(broken, track_id="TR00002", title="Recovered title")
+    df = extract_dataset(input_dir, output_file, manifest_file)
+    assert len(df) == 2
+    assert df[df["track_id"] == "TR00002"].iloc[0]["title"] == "Recovered title"
+
+
+def test_invalid_manifest_is_rejected(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    manifest_file.write_text('{"version": 0, "files": []}', encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        extract_dataset(input_dir, output_file, manifest_file)
+
+
+def test_missing_parquet_with_existing_manifest_is_reconciled(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    extract_dataset(input_dir, output_file, manifest_file)
+    output_file.unlink()
+
+    df = extract_dataset(input_dir, output_file, manifest_file)
+    assert len(df) == 1
+    assert df["track_id"].is_unique
+
+
+def test_duplicate_track_and_source_validation(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "track_id": ["TR1", "TR1"],
+            "song_id": ["S1", "S2"],
+            "title": ["A", "B"],
+            "artist_id": ["AR1", "AR2"],
+            "artist_name": ["Art1", "Art2"],
+            "artist_location": ["L1", "L2"],
+            "artist_latitude": [1.0, 2.0],
+            "artist_longitude": [3.0, 4.0],
+            "release": ["Rel", "Rel"],
+            "year": [2000, 2001],
+            "genre": ["Rock", "Jazz"],
+            "duration_seconds": [180.0, 200.0],
+            "tempo": [100.0, 110.0],
+            "loudness": [-5.0, -4.0],
+            "danceability": [0.7, 0.6],
+            "energy": [0.8, 0.9],
+            "key": [1, 2],
+            "mode": [1, 0],
+            "time_signature": [4, 4],
+            "song_hotttnesss": [0.7, 0.8],
+            "artist_hotttnesss": [0.9, 0.8],
+            "artist_familiarity": [0.7, 0.9],
+            "source_file": ["a.h5", "a.h5"],
+            "ingested_at_utc": ["2024-01-01", "2024-01-01"],
+        }
+    )
+
+    with pytest.raises(ValueError):
+        validate_dataset(df)
+
+
+def test_atomic_write_failure_preserves_previous_dataset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+
+    make_hdf5_file(input_dir / "TR00001.h5", track_id="TR00001")
+    initial = extract_dataset(input_dir, output_file, manifest_file)
+    original_bytes = output_file.read_bytes()
+
+    make_hdf5_file(input_dir / "TR00002.h5", track_id="TR00002")
+
+    def fail_to_parquet(self, *args, **kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_to_parquet)
+
+    with pytest.raises(OSError):
+        extract_dataset(input_dir, output_file, manifest_file)
+
+    assert output_file.read_bytes() == original_bytes
+
+
+def test_path_normalization_removes_windows_prefixes() -> None:
+    assert normalize_source_path("D:/million-song-data-pipeline/data/raw/MillionSongSubset/A/A/A/TR00001.h5") == "data/raw/MillionSongSubset/A/A/A/TR00001.h5"
+    assert normalize_source_path("C:/tmp/input.h5") == "C:/tmp/input.h5"
+    assert normalize_source_path("./data/raw/x.h5") == "data/raw/x.h5"
+
+
+@pytest.mark.parametrize("column", ["track_id", "source_file"])
+def test_required_columns_exist_in_schema(column: str) -> None:
+    assert column in EXPECTED_COLUMNS

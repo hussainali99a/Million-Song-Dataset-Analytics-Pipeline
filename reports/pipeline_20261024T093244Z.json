@@ -1,0 +1,112 @@
+{
+  "project": "Million Song Dataset Analytics Pipeline",
+  "run_id": "20261024T093244Z",
+  "started_at_utc": "2026-10-24T09:32:44.099862+00:00",
+  "finished_at_utc": "2026-10-24T09:33:24.082481+00:00",
+  "status": "success",
+  "total_duration_seconds": 39.98,
+  "log_file": "D:\\million-song-data-pipeline\\logs\\pipeline_20261024T093244Z.log",
+  "extraction_metrics": {
+    "output_file": "D:\\million-song-data-pipeline\\data\\processed\\songs.parquet",
+    "extracted_rows": 10000,
+    "failed_files": 0,
+    "parquet_size_bytes": 1332396
+  },
+  "dbt_run_metrics": {
+    "models_discovered": 4,
+    "data_tests_discovered": 8,
+    "results": {
+      "pass": 4,
+      "warn": 0,
+      "error": 0,
+      "skip": 0,
+      "no_op": 0,
+      "reused": 0,
+      "total": 4
+    }
+  },
+  "dbt_test_metrics": {
+    "models_discovered": 4,
+    "data_tests_discovered": 8,
+    "results": {
+      "pass": 8,
+      "warn": 0,
+      "error": 0,
+      "skip": 0,
+      "no_op": 0,
+      "reused": 0,
+      "total": 8
+    }
+  },
+  "warehouse_metrics": {
+    "database_file": "D:\\million-song-data-pipeline\\data\\warehouse\\music_analytics.duckdb",
+    "table_row_counts": {
+      "stg_songs": 10000,
+      "dim_artists": 3888,
+      "fct_song_audio": 10000,
+      "song_yearly_summary": 68
+    }
+  },
+  "stages": [
+    {
+      "name": "Extract HDF5 to Parquet",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:32:44.101019+00:00",
+      "finished_at_utc": "2026-10-24T09:33:11.498101+00:00",
+      "duration_seconds": 27.37,
+      "exit_code": 0,
+      "metrics": {
+        "output_file": "D:\\million-song-data-pipeline\\data\\processed\\songs.parquet",
+        "extracted_rows": 10000,
+        "failed_files": 0,
+        "parquet_size_bytes": 1332396
+      },
+      "error": null
+    },
+    {
+      "name": "Build dbt models",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:33:11.498137+00:00",
+      "finished_at_utc": "2026-10-24T09:33:18.215783+00:00",
+      "duration_seconds": 6.72,
+      "exit_code": 0,
+      "metrics": {
+        "models_discovered": 4,
+        "data_tests_discovered": 8,
+        "results": {
+          "pass": 4,
+          "warn": 0,
+          "error": 0,
+          "skip": 0,
+          "no_op": 0,
+          "reused": 0,
+          "total": 4
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "Run dbt data-quality tests",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:33:18.215796+00:00",
+      "finished_at_utc": "2026-10-24T09:33:24.022594+00:00",
+      "duration_seconds": 5.81,
+      "exit_code": 0,
+      "metrics": {
+        "models_discovered": 4,
+        "data_tests_discovered": 8,
+        "results": {
+          "pass": 8,
+          "warn": 0,
+          "error": 0,
+          "skip": 0,
+          "no_op": 0,
+          "reused": 0,
+          "total": 8
+        }
+      },
+      "error": null
+    }
+  ],
+  "error": null
+}

@@ -1,0 +1,39 @@
+{
+  "project": "Million Song Dataset Analytics Pipeline",
+  "run_id": "20261024T092646Z",
+  "started_at_utc": "2026-10-24T09:26:46.605590+00:00",
+  "finished_at_utc": "2026-10-24T09:29:27.486456+00:00",
+  "status": "success",
+  "total_duration_seconds": 160.88,
+  "log_file": "D:\\million-song-data-pipeline\\logs\\pipeline_20261024T092646Z.log",
+  "stages": [
+    {
+      "name": "Extract HDF5 to Parquet",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:26:46.607269+00:00",
+      "finished_at_utc": "2026-10-24T09:29:04.659237+00:00",
+      "duration_seconds": 138.05,
+      "exit_code": 0,
+      "error": null
+    },
+    {
+      "name": "Build dbt models",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:29:04.659289+00:00",
+      "finished_at_utc": "2026-10-24T09:29:21.527352+00:00",
+      "duration_seconds": 16.87,
+      "exit_code": 0,
+      "error": null
+    },
+    {
+      "name": "Run dbt data-quality tests",
+      "status": "success",
+      "started_at_utc": "2026-10-24T09:29:21.527395+00:00",
+      "finished_at_utc": "2026-10-24T09:29:27.485772+00:00",
+      "duration_seconds": 5.96,
+      "exit_code": 0,
+      "error": null
+    }
+  ],
+  "error": null
+}
