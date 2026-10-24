@@ -7,6 +7,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import queue
+import threading
 
 
 ROOT = Path(__file__).resolve().parent
@@ -53,28 +55,73 @@ def run_step(
     command: list[str],
     cwd: Path = ROOT,
 ) -> float:
-    """Run a stage, log its duration, and raise if it fails."""
+    """Run a stage and send its output to both terminal and log file."""
     logger.info("START | %s", name)
+    logger.info("COMMAND | %s", subprocess.list2cmdline(command))
+
     start = time.perf_counter()
+    output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
     try:
-        subprocess.run(command, cwd=cwd, check=True)
-    except subprocess.CalledProcessError:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        def read_output() -> None:
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    output_queue.put(("line", line.rstrip("\r\n")))
+            finally:
+                output_queue.put(("done", None))
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+
+        while True:
+            kind, message = output_queue.get()
+
+            if kind == "done":
+                break
+
+            if message:
+                logger.info("[%s] %s", name, message)
+
+        reader.join()
+        exit_code = process.wait()
+        duration = time.perf_counter() - start
+
+        if exit_code != 0:
+            logger.error(
+                "FAILED | %s | exit_code=%d | duration=%.2f seconds",
+                name,
+                exit_code,
+                duration,
+            )
+            raise subprocess.CalledProcessError(exit_code, command)
+
+        logger.info(
+            "SUCCESS | %s | duration=%.2f seconds",
+            name,
+            duration,
+        )
+        return duration
+
+    except OSError:
         duration = time.perf_counter() - start
         logger.exception(
-            "FAILED | %s | duration=%.2f seconds",
+            "FAILED TO START | %s | duration=%.2f seconds",
             name,
             duration,
         )
         raise
-
-    duration = time.perf_counter() - start
-    logger.info(
-        "SUCCESS | %s | duration=%.2f seconds",
-        name,
-        duration,
-    )
-    return duration
 
 
 def main() -> int:
