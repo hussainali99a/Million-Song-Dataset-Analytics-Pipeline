@@ -3,6 +3,6 @@ music_analytics:
   outputs:
     dev:
       type: duckdb
-      path: 'D:/million-song-data-pipeline/data/warehouse/music_analytics.duckdb'
+      path: "{{ env_var('MUSIC_ANALYTICS_DUCKDB_PATH', 'data/warehouse/music_analytics.duckdb') }}"
       schema: analytics
       threads: 1

@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
+import math
+import os
 import re
 import subprocess
 import sys
-import threading
 import time
 import traceback
 from datetime import UTC, datetime
@@ -37,6 +37,123 @@ WAREHOUSE_FILE = ROOT / "data" / "warehouse" / "music_analytics.duckdb"
 EXTRACTION_FAILURE_FILE = (
     ROOT / "data" / "processed" / "extraction_errors.csv"
 )
+DEFAULT_STAGE_TIMEOUT_SECONDS = 1800.0
+PROCESS_TERMINATION_GRACE_SECONDS = 5.0
+PIPELINE_TIMEOUT_ENV = "MUSIC_PIPELINE_TIMEOUT_SECONDS"
+STAGE_TIMEOUT_ENV_PREFIX = "MUSIC_PIPELINE_TIMEOUT"
+SENSITIVE_OUTPUT_PATTERN = re.compile(
+    r"(?i)\b(password|passwd|token|secret|api[_-]?key|access[_-]?key)\b"
+    r"(\s*[:=]\s*|\s+(?:is\s+)?)([^\s,;]+)"
+)
+BEARER_TOKEN_PATTERN = re.compile(r"(?i)\bBearer\s+\S+")
+
+
+class StageTimeoutError(TimeoutError):
+    """Raised when a pipeline subprocess exceeds its configured time limit."""
+
+    def __init__(
+        self,
+        stage_name: str,
+        timeout_seconds: float,
+        process_id: int,
+        return_code: int,
+        termination: str,
+        output_lines: list[str],
+    ) -> None:
+        super().__init__(
+            f"Pipeline stage {stage_name!r} exceeded its "
+            f"{timeout_seconds:g}-second timeout; process {termination}."
+        )
+        self.stage_name = stage_name
+        self.timeout_seconds = timeout_seconds
+        self.process_id = process_id
+        self.return_code = return_code
+        self.termination = termination
+        self.output_lines = output_lines
+
+
+def validate_timeout(value: float, *, setting_name: str) -> float:
+    """Return a finite, positive subprocess timeout or raise a clear error."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            f"{setting_name} must be a positive finite number of seconds"
+        )
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{setting_name} must be a positive finite number of seconds")
+    return timeout
+
+
+def stage_timeout_seconds(stage_name: str) -> float:
+    """Resolve a per-stage timeout, then the pipeline-wide default."""
+    stage_slug = re.sub(r"[^A-Z0-9]+", "_", stage_name.upper()).strip("_")
+    stage_setting = f"{STAGE_TIMEOUT_ENV_PREFIX}_{stage_slug}_SECONDS"
+    setting_name = stage_setting
+    raw_value = os.environ.get(stage_setting)
+    if raw_value is None:
+        setting_name = PIPELINE_TIMEOUT_ENV
+        raw_value = os.environ.get(
+            PIPELINE_TIMEOUT_ENV,
+            str(DEFAULT_STAGE_TIMEOUT_SECONDS),
+        )
+    try:
+        return validate_timeout(float(raw_value), setting_name=setting_name)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid timeout configuration {setting_name}: {raw_value!r}; "
+            "expected a positive finite number of seconds"
+        ) from exc
+
+
+def redact_subprocess_output(line: str) -> str:
+    """Mask common credential assignments before writing child output to logs."""
+    redacted = SENSITIVE_OUTPUT_PATTERN.sub(r"\1\2[REDACTED]", line)
+    return BEARER_TOKEN_PATTERN.sub("Bearer [REDACTED]", redacted)
+
+
+def terminate_process(
+    process: subprocess.Popen[str],
+    logger: logging.Logger,
+    stage_name: str,
+) -> str:
+    """Stop a child process, escalating from terminate to kill when necessary."""
+    if process.poll() is not None:
+        return "already exited"
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        logger.warning(
+            "Could not terminate child process; attempting kill | %s | pid=%d | %s",
+            stage_name,
+            process.pid,
+            exc,
+        )
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        return "killed"
+
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Process did not terminate after %.2f seconds; killing | %s | pid=%d",
+            PROCESS_TERMINATION_GRACE_SECONDS,
+            stage_name,
+            process.pid,
+        )
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        return "killed"
+    return "terminated"
 
 
 # ============================================================
@@ -297,19 +414,26 @@ def run_step(
     name: str,
     command: list[str],
     cwd: Path = ROOT,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Run a stage, stream output to logs, and return its result."""
+    """Run a stage with a bounded timeout and return its captured output."""
+    timeout_seconds = (
+        stage_timeout_seconds(name)
+        if timeout is None
+        else validate_timeout(timeout, setting_name="timeout")
+    )
     logger.info("START | %s", name)
-    logger.info("COMMAND | %s", subprocess.list2cmdline(command))
+    logger.info(
+        "COMMAND | executable=%s | argument_count=%d | timeout=%.2f seconds",
+        Path(command[0]).name if command else "<empty>",
+        max(0, len(command) - 1),
+        timeout_seconds,
+    )
 
     start = time.perf_counter()
-    output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
-    output_lines: list[str] = []
-
-    process: subprocess.Popen[str] | None = None
 
     try:
-        process = subprocess.Popen(
+        with subprocess.Popen(
             command,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -317,34 +441,48 @@ def run_step(
             text=True,
             encoding="utf-8",
             errors="replace",
-            bufsize=1,
-        )
-
-        def read_output() -> None:
-            assert process is not None
-            assert process.stdout is not None
-
+        ) as process:
             try:
-                for line in process.stdout:
-                    output_queue.put(("line", line.rstrip("\r\n")))
-            finally:
-                output_queue.put(("done", None))
+                output, _ = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                termination = terminate_process(process, logger, name)
+                output, _ = process.communicate()
+                output_lines = (output or "").splitlines()
+                for line in output_lines:
+                    logger.info("[%s] %s", name, redact_subprocess_output(line))
+                duration = round(time.perf_counter() - start, 2)
+                logger.error(
+                    "TIMEOUT | %s | timeout=%.2f seconds | duration=%.2f seconds",
+                    name,
+                    timeout_seconds,
+                    duration,
+                )
+                timeout_error = StageTimeoutError(
+                    stage_name=name,
+                    timeout_seconds=timeout_seconds,
+                    process_id=process.pid,
+                    return_code=process.returncode,
+                    termination=termination,
+                    output_lines=output_lines,
+                )
+                raise timeout_error from exc
+            except KeyboardInterrupt:
+                terminate_process(process, logger, name)
+                output, _ = process.communicate()
+                for line in (output or "").splitlines():
+                    logger.info(
+                        "[%s] %s",
+                        name,
+                        redact_subprocess_output(line),
+                    )
+                logger.warning("CANCELLED | %s | interrupted by user", name)
+                raise
 
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
+            output_lines = (output or "").splitlines()
+            for line in output_lines:
+                logger.info("[%s] %s", name, redact_subprocess_output(line))
+            exit_code = process.returncode
 
-        while True:
-            kind, message = output_queue.get()
-
-            if kind == "done":
-                break
-
-            if message is not None:
-                output_lines.append(message)
-                logger.info("[%s] %s", name, message)
-
-        reader.join()
-        exit_code = process.wait()
         duration = round(time.perf_counter() - start, 2)
 
         if exit_code != 0:
@@ -357,6 +495,7 @@ def run_step(
 
             error = subprocess.CalledProcessError(exit_code, command)
             error.output_lines = output_lines
+            error.output = output
             raise error
 
         logger.info(
@@ -369,16 +508,16 @@ def run_step(
             "status": "success",
             "exit_code": exit_code,
             "duration_seconds": duration,
+            "timeout_seconds": timeout_seconds,
             "_output_lines": output_lines,
         }
+
+    except KeyboardInterrupt:
+        raise
 
     except OSError:
         logger.exception("FAILED TO START | %s", name)
         raise
-
-    finally:
-        if process is not None and process.stdout is not None:
-            process.stdout.close()
 
 
 # ============================================================
@@ -476,6 +615,7 @@ def main() -> int:
                 "started_at_utc": stage_start.isoformat(),
                 "finished_at_utc": None,
                 "duration_seconds": None,
+                "timeout_seconds": None,
                 "exit_code": None,
                 "metrics": None,
                 "error": None,
@@ -484,7 +624,14 @@ def main() -> int:
             report["stages"].append(stage_report)
 
             try:
-                result = run_step(logger, name, command)
+                timeout_seconds = stage_timeout_seconds(name)
+                stage_report["timeout_seconds"] = timeout_seconds
+                result = run_step(
+                    logger,
+                    name,
+                    command,
+                    timeout=timeout_seconds,
+                )
 
                 stage_report["status"] = result["status"]
                 stage_report["exit_code"] = result["exit_code"]
@@ -523,6 +670,18 @@ def main() -> int:
                 stage_report["status"] = "failed"
                 stage_report["exit_code"] = exc.returncode
                 stage_report["error"] = str(exc)
+                raise
+
+            except StageTimeoutError as exc:
+                stage_report["status"] = "timed_out"
+                stage_report["timeout_seconds"] = exc.timeout_seconds
+                stage_report["exit_code"] = exc.return_code
+                stage_report["error"] = str(exc)
+                raise
+
+            except KeyboardInterrupt:
+                stage_report["status"] = "cancelled"
+                stage_report["error"] = "Interrupted by user"
                 raise
 
             except Exception as exc:
@@ -568,6 +727,15 @@ def main() -> int:
             raise ValueError("Extraction metrics missing from successful pipeline report")
         if report["warehouse_metrics"] is None:
             raise ValueError("Warehouse metrics missing from successful pipeline report")
+
+    except KeyboardInterrupt:
+        report["status"] = "cancelled"
+        report["error"] = {
+            "type": "KeyboardInterrupt",
+            "message": "Pipeline cancelled by user",
+        }
+        logger.warning("PIPELINE CANCELLED BY USER")
+        return_code = 130
 
     except Exception as exc:
         report["status"] = "failed"

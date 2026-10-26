@@ -2,6 +2,14 @@
 version: 2
 
 models:
+  - name: stg_songs
+    description: "Cleaned staging view over the processed song dataset."
+    columns:
+      - name: track_id
+        data_tests:
+          - not_null
+          - unique
+
   - name: dim_artists
     description: "One row per artist represented in the dataset."
     columns:
@@ -17,6 +25,12 @@ models:
         data_tests:
           - not_null
           - unique
+      - name: artist_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_artists')
+                field: artist_id
 
   - name: song_yearly_summary
     description: "Aggregated song and audio statistics for each known release year."

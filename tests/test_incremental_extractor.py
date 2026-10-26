@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import h5py
@@ -123,6 +124,29 @@ def test_new_file_added_and_existing_file_changed(tmp_path: Path) -> None:
     assert row["title"] == "Changed title"
 
 
+def test_same_size_and_mtime_content_change_is_reprocessed(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+    source_file = input_dir / "TR00001.h5"
+
+    make_hdf5_file(source_file, track_id="TR00001", title="Tune")
+    extract_dataset(input_dir, output_file, manifest_file)
+    original_stat = source_file.stat()
+
+    make_hdf5_file(source_file, track_id="TR00001", title="Song")
+    os.utime(
+        source_file,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    updated_stat = source_file.stat()
+    assert updated_stat.st_size == original_stat.st_size
+    assert updated_stat.st_mtime_ns == original_stat.st_mtime_ns
+
+    df = extract_dataset(input_dir, output_file, manifest_file)
+    assert df.loc[0, "title"] == "Song"
+
+
 def test_deleted_source_file_is_removed(tmp_path: Path) -> None:
     input_dir = tmp_path / "data" / "raw" / "MillionSongSubset" / "A" / "A" / "A"
     output_file = tmp_path / "data" / "processed" / "songs.parquet"
@@ -137,6 +161,43 @@ def test_deleted_source_file_is_removed(tmp_path: Path) -> None:
 
     assert len(df) == 1
     assert df["track_id"].tolist() == ["TR00002"]
+
+
+def test_removing_all_source_files_reconciles_to_empty_dataset(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset"
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+    first = input_dir / "TR00001.h5"
+    second = input_dir / "TR00002.h5"
+    make_hdf5_file(first, track_id="TR00001")
+    make_hdf5_file(second, track_id="TR00002")
+    extract_dataset(input_dir, output_file, manifest_file)
+
+    first.unlink()
+    second.unlink()
+    df = extract_dataset(input_dir, output_file, manifest_file)
+
+    assert df.empty
+    assert pd.read_parquet(output_file).empty
+    assert json.loads(manifest_file.read_text(encoding="utf-8"))["files"] == {}
+    assert extract_dataset(input_dir, output_file, manifest_file).empty
+
+
+def test_all_failed_first_run_persists_failure_report(tmp_path: Path) -> None:
+    input_dir = tmp_path / "data" / "raw" / "MillionSongSubset"
+    input_dir.mkdir(parents=True)
+    source_file = input_dir / "broken.h5"
+    source_file.write_text("not a valid HDF5 file", encoding="utf-8")
+    output_file = tmp_path / "data" / "processed" / "songs.parquet"
+    manifest_file = tmp_path / "data" / "processed" / "ingestion_manifest.json"
+    failure_file = tmp_path / "data" / "processed" / "extraction_errors.csv"
+
+    with pytest.raises(RuntimeError, match="empty dataset"):
+        extract_dataset(input_dir, output_file, manifest_file, failure_file)
+
+    assert failure_file.is_file()
+    failure_source = pd.read_csv(failure_file)["source_file"].iloc[0].replace("\\", "/")
+    assert failure_source.endswith("data/raw/MillionSongSubset/broken.h5")
 
 
 def test_failed_file_keeps_old_record_and_retries_next_run(tmp_path: Path) -> None:

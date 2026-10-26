@@ -24,4 +24,6 @@ SELECT
     artist_familiarity,
     source_file,
     ingested_at_utc
-FROM read_parquet('D:/million-song-data-pipeline/data/processed/songs.parquet')
+FROM read_parquet(
+    '{{ env_var("MUSIC_ANALYTICS_PARQUET", "data/processed/songs.parquet") }}'
+)

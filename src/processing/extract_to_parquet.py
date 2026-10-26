@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import posixpath
@@ -157,12 +158,18 @@ def relative_source_path(file_path: Path, root_dir: Path | None = None) -> str:
         return normalize_source_path(file_path.as_posix())
 
 
-def file_signature(file_path: Path) -> dict[str, int]:
-    """Build a lightweight signature used to detect source changes."""
+def file_signature(file_path: Path) -> dict[str, int | str]:
+    """Build a content-aware signature used to detect source changes."""
     stat = file_path.stat()
+    digest = hashlib.sha256()
+    with file_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+
     return {
         "size_bytes": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -268,7 +275,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if data.get("version") != 1 or not isinstance(data.get("files"), dict):
         raise ValueError(f"Invalid ingestion manifest: {path}")
 
-    normalized_files: dict[str, dict[str, int]] = {}
+    normalized_files: dict[str, dict[str, int | str]] = {}
     for raw_key, raw_value in data["files"].items():
         if not isinstance(raw_value, dict):
             raise TypeError(f"Manifest entry for {raw_key!r} is not a signature object")
@@ -279,6 +286,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
             "size_bytes": int(raw_value["size_bytes"]),
             "mtime_ns": int(raw_value["mtime_ns"]),
         }
+        if "sha256" in raw_value:
+            signature["sha256"] = str(raw_value["sha256"])
         normalized_files[key] = signature
 
     data["files"] = normalized_files
@@ -341,17 +350,16 @@ def extract_dataset(
         raise FileNotFoundError(f"Dataset directory not found: {input_dir}")
 
     files = sorted(input_dir.rglob("*.h5"))
-    if not files:
-        raise FileNotFoundError(f"No HDF5 song files found in: {input_dir}")
-
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     manifest_exists = manifest_file.exists()
     old_manifest = load_manifest(manifest_file) if manifest_exists else {"version": 1, "files": {}}
+    if not files and not manifest_exists:
+        raise FileNotFoundError(f"No HDF5 song files found in: {input_dir}")
     old_signatures = old_manifest["files"]
 
     current_files: dict[str, Path] = {}
-    current_signatures: dict[str, dict[str, int]] = {}
+    current_signatures: dict[str, dict[str, int | str]] = {}
 
     for file_path in files:
         relative_path = relative_source_path(file_path)
@@ -390,7 +398,7 @@ def extract_dataset(
     ingested_at = datetime.now(UTC).isoformat()
     new_rows: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
-    successful_signatures: dict[str, dict[str, int]] = {}
+    successful_signatures: dict[str, dict[str, int | str]] = {}
 
     for index, relative_path in enumerate(sorted(changed_paths), start=1):
         file_path = current_files[relative_path]
@@ -403,6 +411,10 @@ def extract_dataset(
 
         if index % 500 == 0:
             print(f"Processed changed files: {index:,}/{len(changed_paths):,}")
+
+    if failures:
+        failure_file.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(failures).to_csv(failure_file, index=False)
 
     failed_paths = {failure["source_file"] for failure in failures}
     if not old_df.empty and failed_paths:
@@ -428,7 +440,7 @@ def extract_dataset(
 
     parquet_needs_update = bool(new_rows) or bool(deleted_paths) or not output_file.exists()
     if parquet_needs_update:
-        if combined.empty:
+        if combined.empty and not deleted_paths:
             raise RuntimeError("Incremental extraction would produce an empty dataset.")
         atomic_write_parquet(combined, output_file)
 
@@ -452,10 +464,7 @@ def extract_dataset(
         },
     )
 
-    if failures:
-        failure_file.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(failures).to_csv(failure_file, index=False)
-    elif failure_file.exists():
+    if not failures and failure_file.exists():
         failure_file.unlink()
 
     print("\nIncremental extraction complete")
